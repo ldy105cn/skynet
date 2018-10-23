@@ -1,5 +1,5 @@
 /*
-** $Id: lvm.c,v 2.268 2016/02/05 19:59:14 roberto Exp $
+** $Id: lvm.c,v 2.268.1.1 2017/04/19 17:39:34 roberto Exp $
 ** Lua virtual machine
 ** See Copyright Notice in lua.h
 */
@@ -1201,6 +1201,7 @@ void luaV_execute (lua_State *L) {
         }
       }
       vmcase(OP_FORLOOP) {
+        lua_checksig(L);
         if (ttisinteger(ra)) {  /* integer loop? */
           lua_Integer step = ivalue(ra + 2);
           lua_Integer idx = intop(+, ivalue(ra), step); /* increment index */

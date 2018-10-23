@@ -1,9 +1,9 @@
 local skynet = require "skynet"
 local codecache = require "skynet.codecache"
 local core = require "skynet.core"
-local socket = require "socket"
-local snax = require "snax"
-local memory = require "memory"
+local socket = require "skynet.socket"
+local snax = require "skynet.snax"
+local memory = require "skynet.memory"
 local httpd = require "http.httpd"
 local sockethelper = require "http.sockethelper"
 
@@ -91,7 +91,7 @@ end
 local function console_main_loop(stdin, print)
 	print("Welcome to skynet console")
 	skynet.error(stdin, "connected")
-	pcall(function()
+	local ok, err = pcall(function()
 		while true do
 			local cmdline = socket.readline(stdin, "\n")
 			if not cmdline then
@@ -109,6 +109,9 @@ local function console_main_loop(stdin, print)
 			end
 		end
 	end)
+	if not ok then
+		skynet.error(stdin, err)
+	end
 	skynet.error(stdin, "disconnected")
 	socket.close(stdin)
 end
@@ -155,6 +158,8 @@ function COMMAND.help()
 		shrtbl = "Show shared short string table info",
 		ping = "ping address",
 		call = "call address ...",
+		trace = "trace address [proto] [on|off]",
+		netstat = "netstat : show netstat",
 	}
 end
 
@@ -203,7 +208,10 @@ function COMMAND.service()
 end
 
 local function adjust_address(address)
-	if address:sub(1,1) ~= ":" then
+	local prefix = address:sub(1,1)
+	if prefix == '.' then
+		return assert(skynet.localname(address), "Not a valid name")
+	elseif prefix ~= ':' then
 		address = assert(tonumber("0x" .. address), "Need an address") | (skynet.harbor(skynet.self()) << 24)
 	end
 	return address
@@ -233,7 +241,7 @@ function COMMAND.exit(address)
 	skynet.send(adjust_address(address), "debug", "EXIT")
 end
 
-function COMMAND.inject(address, filename)
+function COMMAND.inject(address, filename, ...)
 	address = adjust_address(address)
 	local f = io.open(filename, "rb")
 	if not f then
@@ -241,7 +249,7 @@ function COMMAND.inject(address, filename)
 	end
 	local source = f:read "*a"
 	f:close()
-	local ok, output = skynet.call(address, "debug", "RUN", source, filename)
+	local ok, output = skynet.call(address, "debug", "RUN", source, filename, ...)
 	if ok == false then
 		error(output)
 	end
@@ -262,8 +270,11 @@ function COMMANDX.debug(cmd)
 	local address = adjust_address(cmd[2])
 	local agent = skynet.newservice "debug_agent"
 	local stop
-	skynet.fork(function()
+	local term_co = coroutine.running()
+	local function forward_cmd()
 		repeat
+			-- notice :  It's a bad practice to call socket.readline from two threads (this one and console_main_loop), be careful.
+			skynet.call(agent, "lua", "ping")	-- detect agent alive, if agent exit, raise error
 			local cmdline = socket.readline(cmd.fd, "\n")
 			cmdline = cmdline and cmdline:gsub("(.*)\r$", "%1")
 			if not cmdline then
@@ -272,9 +283,25 @@ function COMMANDX.debug(cmd)
 			end
 			skynet.send(agent, "lua", "cmd", cmdline)
 		until stop or cmdline == "cont"
+	end
+	skynet.fork(function()
+		pcall(forward_cmd)
+		if not stop then	-- block at skynet.call "start"
+			term_co = nil
+		else
+			skynet.wakeup(term_co)
+		end
 	end)
-	skynet.call(agent, "lua", "start", address, cmd.fd)
+	local ok, err = skynet.call(agent, "lua", "start", address, cmd.fd)
 	stop = true
+	if term_co then
+		-- wait for fork coroutine exit.
+		skynet.wait(term_co)
+	end
+
+	if not ok then
+		error(err)
+	end
 end
 
 function COMMAND.logon(address)
@@ -321,6 +348,22 @@ function COMMAND.ping(address)
 	return tostring(ti)
 end
 
+local function toboolean(x)
+	return x and (x == "true" or x == "on")
+end
+
+function COMMAND.trace(address, proto, flag)
+	address = adjust_address(address)
+	if flag == nil then
+		if proto == "on" or proto == "off" then
+			proto = toboolean(proto)
+		end
+	else
+		flag = toboolean(flag)
+	end
+	skynet.call(address, "debug", "TRACELOG", proto, flag)
+end
+
 function COMMANDX.call(cmd)
 	local address = adjust_address(cmd[2])
 	local cmdline = assert(cmd[1]:match("%S+%s+%S+%s(.+)") , "need arguments")
@@ -335,4 +378,50 @@ end
 
 if type(cmdext) == "function" then
 	cmdext(COMMAND)
+end
+local function bytes(size)
+	if size == nil or size == 0 then
+		return
+	end
+	if size < 1024 then
+		return size
+	end
+	if size < 1024 * 1024 then
+		return tostring(size/1024) .. "K"
+	end
+	return tostring(size/(1024*1024)) .. "M"
+end
+
+local function convert_stat(info)
+	local now = skynet.now()
+	local function time(t)
+		if t == nil then
+			return
+		end
+		t = now - t
+		if t < 6000 then
+			return tostring(t/100) .. "s"
+		end
+		local hour = t // (100*60*60)
+		t = t - hour * 100 * 60 * 60
+		local min = t // (100*60)
+		t = t - min * 100 * 60
+		local sec = t / 100
+		return string.format("%s%d:%.2gs",hour == 0 and "" or (hour .. ":"),min,sec)
+	end
+
+	info.address = skynet.address(info.address)
+	info.read = bytes(info.read)
+	info.write = bytes(info.write)
+	info.wbuffer = bytes(info.wbuffer)
+	info.rtime = time(info.rtime)
+	info.wtime = time(info.wtime)
+end
+
+function COMMAND.netstat()
+	local stat = socket.netstat()
+	for _, info in ipairs(stat) do
+		convert_stat(info)
+	end
+	return stat
 end

@@ -4,9 +4,9 @@
 -- The license is under the BSD license.
 -- Modified by Cloud Wu (remove bit32 for lua 5.3)
 
-local socketchannel = require "socketchannel"
-local mysqlaux = require "mysqlaux.c"
-local crypt = require "crypt"
+local socketchannel = require "skynet.socketchannel"
+local mysqlaux = require "skynet.mysqlaux.c"
+local crypt = require "skynet.crypt"
 
 
 local sub = string.sub
@@ -21,25 +21,16 @@ local sha1= crypt.sha1
 local setmetatable = setmetatable
 local error = error
 local tonumber = tonumber
-local    new_tab = function (narr, nrec) return {} end
+local new_tab = function (narr, nrec) return {} end
 
 
-local _M = { _VERSION = '0.13' }
+local _M = { _VERSION = '0.14' }
 -- constants
 
-local STATE_CONNECTED = 1
-local STATE_COMMAND_SENT = 2
-
 local COM_QUERY = 0x03
-
 local SERVER_MORE_RESULTS_EXISTS = 8
 
--- 16MB - 1, the default max allowed packet size used by libmysqlclient
-local FULL_PACKET_SIZE = 16777215
-
-
 local mt = { __index = _M }
-
 
 -- mysql field value type converters
 local converters = new_tab(0, 8)
@@ -164,7 +155,7 @@ local function _recv_packet(self,sock)
         typ = "ERR"
     elseif field_count == 0xfe then
         typ = "EOF"
-    elseif field_count <= 250 then
+    else
         typ = "DATA"
     end
 
@@ -601,22 +592,22 @@ local function _query_resp(self)
         if err ~= "again" then
             return true, res
         end
-        local mulitresultset = {res}
-        mulitresultset.mulitresultset = true
+        local multiresultset = {res}
+        multiresultset.multiresultset = true
         local i =2
         while err =="again" do
             res, err, errno, sqlstate = read_result(self,sock)
             if not res then
-                mulitresultset.badresult = true
-                mulitresultset.err = err
-                mulitresultset.errno = errno
-                mulitresultset.sqlstate = sqlstate
-                return true, mulitresultset
+                multiresultset.badresult = true
+                multiresultset.err = err
+                multiresultset.errno = errno
+                multiresultset.sqlstate = sqlstate
+                return true, multiresultset
             end
-            mulitresultset[i]=res
+            multiresultset[i]=res
             i=i+1
         end
-        return true, mulitresultset
+        return true, multiresultset
     end
 end
 
@@ -640,6 +631,7 @@ function _M.connect(opts)
         host = opts.host,
         port = opts.port or 3306,
         auth = _mysql_login(self,user,password,database,opts.on_connect),
+		overload = opts.overload,
     }
     self.sockchannel = channel
     -- try connect first only once
