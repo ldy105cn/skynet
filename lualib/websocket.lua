@@ -214,10 +214,10 @@ function ws:recv()
             return success, message
         end
         if final then
-            data = data .. message
+            data = data .. (message or "")
             break
         else
-            data = data .. message
+            data = data .. (message or "")
         end
     end
     self.handler.on_message(self, data)
