@@ -7,6 +7,12 @@ local urllib = require "http.url"
 
 local ws = {}
 local ws_mt = { __index = ws }
+local log_error = function (fmt, ...)
+    skynet.error(string.format(fmt, ...))
+end
+if skynet.log_error then
+    log_error = skynet.log_error
+end
 
 local function response(id, ...)
     return httpd.write_response(sockethelper.writefunc(id), ...)
@@ -40,12 +46,14 @@ end
 local function accept_connection(header, check_origin, check_origin_ok)
     -- Upgrade header should be present and should be equal to WebSocket
     if not header["upgrade"] or header["upgrade"]:lower() ~= "websocket" then
+	log_error("code:400 can upgrade only to websocket")
         return 400, "Can \"Upgrade\" only to \"WebSocket\"."
     end
 
     -- Connection header should be upgrade. Some proxy servers/load balancers
     -- might mess with it.
     if not header["connection"] or not header["connection"]:lower():find("upgrade", 1,true) then
+	log_error("code:400 connect must be upgrade")
         return 400, "\"Connection\" must be \"Upgrade\"."
     end
 
@@ -55,15 +63,18 @@ local function accept_connection(header, check_origin, check_origin_ok)
     -- simply "Origin".
     local origin = header["origin"] or header["sec-websocket-origin"]
     if origin and check_origin and not check_origin_ok(origin, header["host"]) then
+	log_error("code 403, cross origin websockets not allowed")
         return 403, "Cross origin websockets not allowed"
     end
 
     if not header["sec-websocket-version"] or header["sec-websocket-version"] ~= "13" then
+	log_error("code 400, HTTP/1.1 Upgrade Required Sec-WebSocket-Version: 13")
         return 400, "HTTP/1.1 Upgrade Required\r\nSec-WebSocket-Version: 13\r\n\r\n"
     end
 
     local key = header["sec-websocket-key"]
     if not key then
+	log_error("code 400 \"Sec-WebSocket-Key\" must not be  nil.")
         return 400, "\"Sec-WebSocket-Key\" must not be  nil."
     end
 
@@ -122,7 +133,8 @@ function ws.new(id, header, handler, conf)
         client_terminated = false,
         server_terminated = false,
         mask_outgoing = conf.mask_outgoing,
-        check_origin = conf.check_origin
+        check_origin = conf.check_origin,
+	running = false
     }
 
     self.handler.on_open(self)
@@ -203,6 +215,7 @@ function ws:close(code, reason)
 
     if self.client_terminated then
         socket.close(self.id)
+	running = false
     end
 end
 
@@ -337,7 +350,8 @@ function ws:recv_frame()
 end
 
 function ws:start()
-    while true do
+    running = true
+    while running do
         local message, err = self:recv()
         if not message then
             --print('recv eror:', message, err)

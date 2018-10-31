@@ -250,7 +250,7 @@ end
 
 function socket.read(id, sz)
 	local s = socket_pool[id]
-	assert(s)
+	assert(s, "cannot get socket with fd "..(id or "nil"))
 	if sz == nil then
 		-- read some bytes
 		local ret = driver.readall(s.buffer, buffer_pool)
